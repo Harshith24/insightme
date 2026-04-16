@@ -101,3 +101,58 @@ def global_stats(df: pd.DataFrame) -> dict:
         "date_range_start": calls["date"].min(),
         "date_range_end": calls["date"].max(),
     }
+
+
+FACETIME_TYPES = ("facetime_video", "facetime_audio")
+
+
+def top_contacts_by_call_types(
+    df: pd.DataFrame,
+    types: tuple[str, ...],
+    n: int = 5,
+) -> pd.DataFrame:
+    """Count sessions per contact, filtered to given ``call_type`` values."""
+    calls = _clean_calls(df)
+    if calls.empty:
+        return pd.DataFrame()
+    mask = calls["call_type"].isin(types)
+    if not mask.any():
+        return pd.DataFrame()
+    sub = calls[mask]
+    counts = sub.groupby("phone_normalized").size().sort_values(ascending=False).head(n)
+    return (
+        pd.DataFrame(
+            {
+                "phone_normalized": counts.index.astype(str),
+                "session_count": counts.values.astype(int),
+            }
+        ).reset_index(drop=True)
+    )
+
+
+def longest_answered_calls(df: pd.DataFrame) -> dict[str, dict | None]:
+    """Longest answered call overall and longest FaceTime (video or audio).
+
+    Each value is a dict with phone_normalized, duration_seconds, call_type, date,
+    or None if no matching rows.
+    """
+    calls = _clean_calls(df)
+    answered = calls[calls["is_answered"] & (calls["duration_seconds"] > 0)]
+    if answered.empty:
+        return {"longest_any": None, "longest_facetime": None}
+
+    def row_dict(r: pd.Series) -> dict:
+        return {
+            "phone_normalized": str(r["phone_normalized"]),
+            "duration_seconds": float(r["duration_seconds"]),
+            "call_type": str(r["call_type"]),
+            "date": r["date"],
+        }
+
+    longest_any = row_dict(answered.nlargest(1, "duration_seconds").iloc[0])
+
+    ft = answered[answered["call_type"].isin(FACETIME_TYPES)]
+    if ft.empty:
+        return {"longest_any": longest_any, "longest_facetime": None}
+    longest_ft = row_dict(ft.nlargest(1, "duration_seconds").iloc[0])
+    return {"longest_any": longest_any, "longest_facetime": longest_ft}

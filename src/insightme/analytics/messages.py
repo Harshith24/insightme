@@ -269,3 +269,83 @@ def global_stats(df: pd.DataFrame) -> dict:
         "date_range_end": msgs["date"].max(),
         "messages_with_text": msgs["text"].notna().sum(),
     }
+
+
+def _group_chat_messages(df: pd.DataFrame) -> pd.DataFrame:
+    """Real (non-reaction) group chat rows with a stable sender key."""
+    gm = df[~df["is_reaction"] & df["is_group_chat"]].copy()
+    if gm.empty:
+        return gm
+    gm = gm[gm["chat_id"].notna()]
+    if gm.empty:
+        return gm
+
+    def sender_key(row) -> str:
+        h = row["handle_normalized"]
+        if pd.notna(h) and str(h).strip():
+            return str(h)
+        return "__you__" if int(row["is_from_me"]) == 1 else "__unknown__"
+
+    gm["sender_key"] = gm.apply(sender_key, axis=1)
+    return gm
+
+
+def group_chat_leaderboard(
+    df: pd.DataFrame,
+    top_chats: int = 5,
+) -> pd.DataFrame:
+    """Top group chats by message volume with most active sender per chat.
+
+    Columns: chat_id, message_count, participant_count, top_sender_key,
+    top_sender_messages
+    """
+    gm = _group_chat_messages(df)
+    if gm.empty:
+        return pd.DataFrame()
+
+    chat_sizes = gm.groupby("chat_id").size().sort_values(ascending=False).head(top_chats)
+    rows = []
+    for chat_id, _ in chat_sizes.items():
+        sub = gm[gm["chat_id"] == chat_id]
+        vc = sub.groupby("sender_key").size().sort_values(ascending=False)
+        top_key = vc.index[0]
+        rows.append(
+            {
+                "chat_id": int(chat_id) if pd.notna(chat_id) else chat_id,
+                "message_count": len(sub),
+                "participant_count": sub["sender_key"].nunique(),
+                "top_sender_key": top_key,
+                "top_sender_messages": int(vc.iloc[0]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def group_chat_participant_keys(df: pd.DataFrame, chat_id) -> list[str]:
+    """Unique sender keys for a group chat (for building a human-readable label)."""
+    gm = _group_chat_messages(df)
+    if gm.empty:
+        return []
+    sub = gm[gm["chat_id"] == chat_id]
+    if sub.empty:
+        return []
+    return sorted(sub["sender_key"].unique().tolist(), key=str)
+
+
+def fastest_dm_responders(
+    df: pd.DataFrame,
+    top_n: int = 10,
+    min_their_responses: int = 3,
+) -> pd.DataFrame:
+    """Contacts with the lowest median time for *them* to reply after you (DMs only).
+
+    Uses the same session logic as ``response_times`` (12h gap). Rows are sorted
+    by ``their_median_response_secs`` ascending (fastest first).
+    """
+    rt = response_times(df)
+    if rt.empty:
+        return pd.DataFrame()
+    rt = rt[rt["their_median_response_secs"].notna()].copy()
+    rt = rt[rt["their_response_count"] >= min_their_responses]
+    rt = rt.sort_values("their_median_response_secs", ascending=True).head(top_n)
+    return rt

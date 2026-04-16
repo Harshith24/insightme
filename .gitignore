@@ -1,0 +1,13 @@
+# Pending prompt state for Cursor wiki hooks (do not commit)
+.cursor/wiki-sync/pending/
+.cursor/
+.claude/
+wiki/
+.venv/
+dist/
+build/
+*.egg-info/
+test_data_layer.py
+MANIFEST.in
+CLAUDE.md
+README.md

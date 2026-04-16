@@ -7,6 +7,23 @@ from insightme.analytics import calls as call_analytics
 from insightme.data.contacts import extract_area_code
 
 
+def unified_with_names(
+    messages_df: pd.DataFrame,
+    calls_df: pd.DataFrame,
+    lookup: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Same as `unified_contacts`, plus a ``display_name`` column from the Contacts lookup."""
+    from insightme.data.addressbook import contact_label
+
+    unified = unified_contacts(messages_df, calls_df)
+    if unified.empty:
+        return unified
+    out = unified.copy()
+    lu = lookup or {}
+    out["display_name"] = [contact_label(str(idx), lu) for idx in unified.index]
+    return out
+
+
 def unified_contacts(messages_df: pd.DataFrame, calls_df: pd.DataFrame) -> pd.DataFrame:
     """Build a unified view of each contact across messages and calls.
 

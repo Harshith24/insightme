@@ -59,6 +59,68 @@ def _copy_db(src: Path, tmp_dir: str) -> Path:
     return dest
 
 
+def _impute_peer_handles_in_dms(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill NULL handle_raw for outgoing rows where SQLite has no handle join.
+
+    Apple stores ``handle_id = 0`` on many sent messages. We only impute when the
+    chat looks like a **1:1** thread: ``chat_participant_count <= 2`` and all
+    received (non-reaction) messages share a **single** distinct handle — so we
+    never assign a fake peer in multi-party chats.
+    """
+    if df.empty or "handle_raw" not in df.columns:
+        return df
+
+    recv = df[
+        (df["associated_message_type"] == 0)
+        & (df["is_from_me"] == 0)
+        & df["chat_id"].notna()
+        & df["handle_raw"].notna()
+        & (df["handle_raw"].astype(str).str.len() > 0)
+    ]
+    if recv.empty:
+        return df
+
+    n_peers = recv.groupby("chat_id")["handle_raw"].nunique()
+    single_peer_chats = set(n_peers[n_peers == 1].index.tolist())
+
+    jcnt = df.groupby("chat_id")["chat_participant_count"].first()
+    safe_chats = {
+        cid
+        for cid in single_peer_chats
+        if pd.notna(cid) and int(jcnt.get(cid, 99) or 0) <= 2
+    }
+
+    def _pick_peer(series: pd.Series) -> str:
+        return str(series.iloc[0])
+
+    recv_ok = recv[recv["chat_id"].isin(safe_chats)]
+    if recv_ok.empty:
+        return df
+
+    peer_by_chat = recv_ok.groupby("chat_id", sort=False)["handle_raw"].agg(_pick_peer)
+
+    miss = (
+        (df["associated_message_type"] == 0)
+        & (df["is_from_me"] == 1)
+        & df["chat_id"].notna()
+        & df["chat_id"].map(lambda x: x in safe_chats if pd.notna(x) else False)
+        & (df["handle_raw"].isna() | (df["handle_raw"].astype(str).str.strip() == ""))
+    )
+    if not miss.any():
+        return df
+
+    out = df.copy()
+    fill = out.loc[miss, "chat_id"].map(peer_by_chat)
+    out.loc[miss, "handle_raw"] = fill.values
+    unfilled = miss & out["handle_raw"].isna()
+    if unfilled.any():
+        logger.debug(
+            "%d outgoing rows still lack a peer handle after impute",
+            int(unfilled.sum()),
+        )
+    return out
+
+
 def load_messages(db_path: Path | None = None) -> pd.DataFrame:
     """Load all iMessage data into a clean DataFrame.
 
@@ -102,7 +164,12 @@ def _query_messages(conn: sqlite3.Connection) -> pd.DataFrame:
         m.associated_message_type,
         h.id as handle_raw,
         cmj.chat_id,
-        c.group_id
+        c.group_id,
+        (
+            SELECT COUNT(*)
+            FROM chat_handle_join ch
+            WHERE cmj.chat_id IS NOT NULL AND ch.chat_id = cmj.chat_id
+        ) AS chat_participant_count
     FROM message m
     LEFT JOIN handle h ON m.handle_id = h.ROWID
     LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
@@ -131,6 +198,10 @@ def _query_messages(conn: sqlite3.Connection) -> pd.DataFrame:
             "Could not parse attributedBody for %d messages", unparseable_count
         )
 
+    # Outgoing messages often have message.handle_id = 0, so the handle JOIN is NULL.
+    # For 1:1 chats, infer the peer handle from received rows in the same chat_id.
+    df = _impute_peer_handles_in_dms(df)
+
     # Normalize handles
     df["handle_normalized"] = df["handle_raw"].apply(normalize_handle)
     df["is_email_handle"] = df["handle_raw"].apply(
@@ -140,11 +211,29 @@ def _query_messages(conn: sqlite3.Connection) -> pd.DataFrame:
     # Flag reactions vs real messages
     df["is_reaction"] = df["associated_message_type"] != 0
 
-    # Flag group chats
-    df["is_group_chat"] = df["group_id"].notna()
+    # Group chat: more than two participants in chat_handle_join OR more than two
+    # distinct normalized handles on real messages (covers under-joined groups).
+    df["chat_participant_count"] = (
+        pd.to_numeric(df["chat_participant_count"], errors="coerce").fillna(0).astype(int)
+    )
+    real = df[~df["is_reaction"] & df["chat_id"].notna()]
+    distinct_handles = real.groupby("chat_id")["handle_normalized"].apply(
+        lambda s: int(s.dropna().nunique())
+    )
+    join_cnt = df.groupby("chat_id")["chat_participant_count"].transform("first")
+    dist_cnt = df["chat_id"].map(distinct_handles).fillna(0).astype(int)
+    df["is_group_chat"] = (join_cnt > 2) | (dist_cnt > 2)
 
     # Clean up columns
-    df = df.drop(columns=["date_raw", "attributedBody", "associated_message_type", "group_id"])
+    df = df.drop(
+        columns=[
+            "date_raw",
+            "attributedBody",
+            "associated_message_type",
+            "group_id",
+            "chat_participant_count",
+        ]
+    )
     df = df.rename(columns={"handle_raw": "handle_id"})
 
     total = len(df)
