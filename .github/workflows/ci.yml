@@ -1,0 +1,38 @@
+# Install + build + smoke import on every PR and push to main.
+# (test_data_layer.py needs macOS + Full Disk Access — not run in CI.)
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package (editable)
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Verify sdist/wheel build
+        run: python -m build
+
+      - name: Byte-compile sources
+        run: python -m compileall -q src
+
+      - name: Smoke import
+        run: |
+          python -c "from insightme.data.contacts import normalize_phone; assert normalize_phone('+1 (555) 123-4567') == '5551234567'"
