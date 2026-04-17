@@ -8,5 +8,4 @@ dist/
 build/
 *.egg-info/
 test_data_layer.py
-MANIFEST.in
 CLAUDE.md
