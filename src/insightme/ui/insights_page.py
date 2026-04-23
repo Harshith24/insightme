@@ -1,4 +1,4 @@
-"""Answer-first insights: who you text/call most, group chats, reply speed, call records."""
+"""Answer-first insights for messages and calls: responders, groups, and longest sessions."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _format_group_chat_title(keys: list[str], lookup: dict[str, str], max_names:
     if len(uniq) <= max_names:
         return ", ".join(uniq)
     rest = len(uniq) - max_names
-    return ", ".join(uniq[:max_names]) + f" +{rest} more"
+    return ", ".join(uniq[:max_names]) + f" + {rest} more"
 
 
 def _fmt_duration_secs(secs: float) -> str:
@@ -41,141 +41,113 @@ def _fmt_duration_secs(secs: float) -> str:
     return f"{secs:.0f} s"
 
 
+def _record_card(title: str, value: str, subtitle: str) -> None:
+    st.markdown(
+        """
+<div class='page-shell' style="padding: 0.9rem; margin-bottom: 0.7rem;">
+  <div class='kicker'>{title}</div>
+  <h3 style="margin: 0.1rem 0 0.4rem 0;">{value}</h3>
+  <div class='lead-copy'>{subtitle}</div>
+</div>
+""".format(title=title, value=value, subtitle=subtitle),
+        unsafe_allow_html=True,
+    )
+
+
 def render(
     messages_df: pd.DataFrame | None,
     calls_df: pd.DataFrame | None,
     lookup: dict[str, str],
 ) -> None:
-    st.header("Insights")
+    st.markdown("<div class='kicker'>Deep Dive</div>", unsafe_allow_html=True)
+    st.markdown("## Conversation behavior")
+    st.markdown(
+        "<div class='lead-copy'>Read response speed, group chatter patterns, and standout call sessions in one place.</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div class='soft-rule'></div>", unsafe_allow_html=True)
     lu = lookup or {}
 
-    if messages_df is None:
-        st.warning("Load iMessage for texting insights.")
-    else:
-        st.subheader("Who you text the most (1:1, excl. short codes)")
-        stats = msg_analytics.per_contact_stats(messages_df)
-        if stats.empty:
-            st.caption("No 1:1 message stats.")
-        else:
-            top = stats.head(15).reset_index()
-            top["Name"] = top["handle_normalized"].astype(str).map(lambda h: contact_label(h, lu))
-            top["Handle"] = top["handle_normalized"].astype(str)
-            show = top[["Name", "Handle", "total", "sent", "received"]].rename(
-                columns={"total": "Messages", "sent": "Sent", "received": "Received"}
-            )
-            st.dataframe(show, use_container_width=True, hide_index=True)
+    left, right = st.columns([1.55, 0.85])
 
-        st.subheader("Fastest DM replies (their median time after you send)")
-        st.caption(
-            "Uses 12-hour conversation sessions; requires enough back-and-forth. "
-            "Lower median = they reply sooner after you."
-        )
-        fast = msg_analytics.fastest_dm_responders(
-            messages_df, top_n=15, min_their_responses=3
-        )
-        if fast.empty:
-            st.caption("Not enough DM reply data (or increase message history).")
+    with left:
+        if messages_df is None:
+            st.warning("Load iMessage for texting insights.")
         else:
-            f2 = fast.reset_index()
-            f2["Name"] = f2["handle_normalized"].astype(str).map(lambda h: contact_label(h, lu))
-            f2["Their median"] = (
-                f2["their_median_response_secs"].map(
+            st.markdown("### Fastest responders")
+            st.caption("Sorted by lowest median reply delay after your outbound messages.")
+            fast = msg_analytics.fastest_dm_responders(messages_df, top_n=10, min_their_responses=3)
+            if fast.empty:
+                st.caption("Not enough direct message reply history to score responsiveness.")
+            else:
+                f2 = fast.reset_index()
+                f2["Name"] = f2["handle_normalized"].astype(str).map(lambda h: contact_label(h, lu))
+                f2["Median Time"] = f2["their_median_response_secs"].map(
                     lambda s: _fmt_duration_secs(float(s)) if pd.notna(s) else "—"
                 )
-            )
-            f2["n (their replies)"] = f2["their_response_count"].astype(int)
-            st.dataframe(
-                f2[["Name", "handle_normalized", "Their median", "n (their replies)"]].rename(
-                    columns={"handle_normalized": "Handle"}
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        st.subheader("Top group chats (by message volume)")
-        lb = msg_analytics.group_chat_leaderboard(messages_df, top_chats=5)
-        if lb.empty:
-            st.caption("No group chat messages found.")
-        else:
-            rows = []
-            for _, row in lb.iterrows():
-                cid = row["chat_id"]
-                keys = msg_analytics.group_chat_participant_keys(messages_df, cid)
-                title = _format_group_chat_title(keys, lu)
-                top_sk = str(row["top_sender_key"])
-                rows.append(
-                    {
-                        "Chat (participants)": title,
-                        "chat_id": cid,
-                        "Messages": int(row["message_count"]),
-                        "Participants": int(row["participant_count"]),
-                        "Most active": _label_sender_key(top_sk, lu),
-                        "Their msgs": int(row["top_sender_messages"]),
-                    }
+                ranked = (
+                    f2[["Name", "Median Time", "their_response_count"]]
+                    .rename(columns={"their_response_count": "Replies"})
+                    .copy()
                 )
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                ranked.insert(0, "Rank", range(1, len(ranked) + 1))
+                st.dataframe(
+                    ranked,
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
-    if calls_df is None:
-        st.warning("Load Call History for call insights.")
-    else:
-        st.subheader("Calls by type")
-        cg = call_analytics.global_stats(calls_df)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Phone", f"{cg.get('phone_count', 0):,}")
-        c2.metric("FaceTime video", f"{cg.get('facetime_video_count', 0):,}")
-        c3.metric("FaceTime audio", f"{cg.get('facetime_audio_count', 0):,}")
+            st.markdown("### Group chat activity")
+            lb = msg_analytics.group_chat_leaderboard(messages_df, top_chats=5)
+            if lb.empty:
+                st.caption("No qualifying group activity yet.")
+            else:
+                rows = []
+                for _, row in lb.iterrows():
+                    cid = row["chat_id"]
+                    keys = msg_analytics.group_chat_participant_keys(messages_df, cid)
+                    chat_name = str(row.get("chat_name") or "").strip()
+                    title = chat_name if chat_name else _format_group_chat_title(keys, lu)
+                    rows.append(
+                        {
+                            "Chat": title,
+                            "Messages": int(row["message_count"]),
+                            "Most Active": _label_sender_key(str(row["top_sender_key"]), lu),
+                        }
+                    )
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-        st.subheader("Who you call the most (phone)")
-        phone_top = call_analytics.top_contacts_by_call_types(
-            calls_df, ("phone",), n=10
-        )
-        if phone_top.empty:
-            st.caption("No phone calls in filtered data.")
+    with right:
+        if calls_df is None:
+            st.warning("Load Call History for call insights.")
         else:
-            p2 = phone_top.copy()
-            p2["Name"] = p2["phone_normalized"].map(lambda x: contact_label(str(x), lu))
-            st.dataframe(
-                p2.rename(columns={"session_count": "Sessions"})[
-                    ["Name", "phone_normalized", "Sessions"]
-                ].rename(columns={"phone_normalized": "Phone"}),
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.markdown("### Call profile")
+            cg = call_analytics.global_stats(calls_df)
+            c1, c2 = st.columns(2)
+            c1.metric("Phone", f"{cg.get('phone_count', 0):,}")
+            c2.metric("FaceTime Video", f"{cg.get('facetime_video_count', 0):,}")
+            c3, c4 = st.columns(2)
+            c3.metric("FaceTime Audio", f"{cg.get('facetime_audio_count', 0):,}")
+            c4.metric("Total Hours", f"{cg.get('total_duration_hours', 0):,}")
 
-        st.subheader("Who you FaceTime the most (video + audio sessions)")
-        ft_top = call_analytics.top_contacts_by_call_types(
-            calls_df, call_analytics.FACETIME_TYPES, n=10
-        )
-        if ft_top.empty:
-            st.caption("No FaceTime calls in filtered data.")
-        else:
-            f3 = ft_top.copy()
-            f3["Name"] = f3["phone_normalized"].map(lambda x: contact_label(str(x), lu))
-            st.dataframe(
-                f3.rename(columns={"session_count": "Sessions"})[
-                    ["Name", "phone_normalized", "Sessions"]
-                ].rename(columns={"phone_normalized": "Phone"}),
-                use_container_width=True,
-                hide_index=True,
-            )
+            highs = call_analytics.longest_answered_calls(calls_df)
+            la = highs.get("longest_any")
+            lf = highs.get("longest_facetime")
 
-        st.subheader("Longest single calls (answered)")
-        highs = call_analytics.longest_answered_calls(calls_df)
-        la = highs.get("longest_any")
-        lf = highs.get("longest_facetime")
-        if la:
-            st.write(
-                f"**Any type:** {contact_label(la['phone_normalized'], lu)} "
-                f"— {_fmt_duration_secs(la['duration_seconds'])} "
-                f"({la['call_type']}) @ {la['date']}"
-            )
-        else:
-            st.caption("No answered calls with duration.")
-        if lf:
-            st.write(
-                f"**FaceTime:** {contact_label(lf['phone_normalized'], lu)} "
-                f"— {_fmt_duration_secs(lf['duration_seconds'])} "
-                f"({lf['call_type']}) @ {lf['date']}"
-            )
-        else:
-            st.caption("No answered FaceTime with duration.")
+            if la:
+                _record_card(
+                    "Longest answered call",
+                    contact_label(la["phone_normalized"], lu),
+                    f"{_fmt_duration_secs(la['duration_seconds'])} · {la['call_type']} · {la['date'].strftime('%b %d, %Y')}",
+                )
+            else:
+                st.caption("No answered call records available.")
+
+            if lf:
+                _record_card(
+                    "Longest FaceTime",
+                    contact_label(lf["phone_normalized"], lu),
+                    f"{_fmt_duration_secs(lf['duration_seconds'])} · {lf['call_type']} · {lf['date'].strftime('%b %d, %Y')}",
+                )
+            else:
+                st.caption("No FaceTime records available.")

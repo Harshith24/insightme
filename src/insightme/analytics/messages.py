@@ -296,8 +296,8 @@ def group_chat_leaderboard(
 ) -> pd.DataFrame:
     """Top group chats by message volume with most active sender per chat.
 
-    Columns: chat_id, message_count, participant_count, top_sender_key,
-    top_sender_messages
+    Columns: chat_id, chat_name, message_count, participant_count,
+    top_sender_key, top_sender_messages
     """
     gm = _group_chat_messages(df)
     if gm.empty:
@@ -312,6 +312,11 @@ def group_chat_leaderboard(
         rows.append(
             {
                 "chat_id": int(chat_id) if pd.notna(chat_id) else chat_id,
+                "chat_name": (
+                    str(sub["chat_name"].dropna().iloc[0]).strip()
+                    if "chat_name" in sub.columns and sub["chat_name"].notna().any()
+                    else None
+                ),
                 "message_count": len(sub),
                 "participant_count": sub["sender_key"].nunique(),
                 "top_sender_key": top_key,

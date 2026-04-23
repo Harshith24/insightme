@@ -178,6 +178,11 @@ def _query_messages(conn: sqlite3.Connection) -> pd.DataFrame:
     """
 
     df = pd.read_sql_query(query, conn)
+    chat_name_map = _chat_name_map(conn)
+    if chat_name_map:
+        df["chat_name"] = df["chat_id"].map(chat_name_map)
+    else:
+        df["chat_name"] = None
 
     # Convert Apple nanosecond timestamps to datetime
     df["date"] = pd.to_datetime(
@@ -245,3 +250,47 @@ def _query_messages(conn: sqlite3.Connection) -> pd.DataFrame:
     )
 
     return df
+
+
+def _chat_name_map(conn: sqlite3.Connection) -> dict[int, str]:
+    """Build chat_id -> best available chat title from chat metadata."""
+    try:
+        cols_df = pd.read_sql_query("PRAGMA table_info(chat)", conn)
+    except Exception:
+        return {}
+
+    cols = set(cols_df["name"].tolist()) if "name" in cols_df.columns else set()
+    # Only use explicit chat titles; IDs (group_id/chat_identifier) are usually
+    # machine values and worse than participant-based fallback labels in the UI.
+    candidates = [c for c in ("display_name",) if c in cols]
+    if not candidates:
+        return {}
+
+    sel = ", ".join([f"c.{c} AS {c}" for c in candidates])
+    q = f"SELECT c.ROWID AS chat_id, {sel} FROM chat c"
+    try:
+        chats = pd.read_sql_query(q, conn)
+    except Exception:
+        return {}
+
+    if chats.empty:
+        return {}
+
+    out: dict[int, str] = {}
+    for _, row in chats.iterrows():
+        raw_chat_id = row.get("chat_id")
+        if pd.isna(raw_chat_id):
+            continue
+        chat_id = int(raw_chat_id)
+        chosen = None
+        for col in candidates:
+            val = row.get(col)
+            if pd.isna(val):
+                continue
+            s = str(val).strip()
+            if s:
+                chosen = s
+                break
+        if chosen:
+            out[chat_id] = chosen
+    return out
