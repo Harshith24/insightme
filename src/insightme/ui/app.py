@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+
 import streamlit as st
 
 from insightme.ui import contacts_page, dashboard, data_access, insights_page, patterns_page
@@ -238,6 +240,14 @@ def _render_header(page_name: str) -> None:
     )
 
 
+def _package_version_label() -> str:
+    """Return installed package version for runtime visibility."""
+    try:
+        return version("insightme")
+    except PackageNotFoundError:
+        return "local-dev"
+
+
 def main() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
 
@@ -264,7 +274,8 @@ def main() -> None:
     with contacts_col:
         st.markdown("<div style='height: 1.9rem'></div>", unsafe_allow_html=True)
         st.markdown(
-            f"<div class='top-chip'>Contacts mapped: {len(lookup)}</div>",
+            f"<div class='top-chip'>Contacts mapped: {len(lookup)}</div> "
+            f"<div class='top-chip'>Version: {_package_version_label()}</div>",
             unsafe_allow_html=True,
         )
 
