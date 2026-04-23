@@ -9,3 +9,6 @@ build/
 *.egg-info/
 test_data_layer.py
 CLAUDE.md
+__pycache__/
+*.pyc
+*.pyo
