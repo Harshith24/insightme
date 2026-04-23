@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +73,19 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
 
       - name: Verify sdist/wheel build
-        run: python -m build
+        run: |
+          python -m build
+          python - <<'PY'
+          from pathlib import Path
+          wheels = list(Path("dist").glob("*.whl"))
+          assert wheels, "No wheel produced in dist/"
+          wheel = wheels[0].name
+          print(f"Built wheel: {wheel}")
+          assert "py3-none-any" in wheel, (
+              "Expected universal pure-Python wheel tag 'py3-none-any'; "
+              f"got {wheel}"
+          )
+          PY
 
       - name: Byte-compile sources
         run: python -m compileall -q src
