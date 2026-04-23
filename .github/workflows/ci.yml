@@ -10,7 +10,52 @@ on:
     branches: [main]
 
 jobs:
+  version-bump-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Require pyproject version bump vs base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          base_sha = "${{ github.event.pull_request.base.sha }}"
+          head_sha = "${{ github.event.pull_request.head.sha }}"
+
+          def read_version_from_bytes(b: bytes) -> str:
+              data = tomllib.loads(b.decode("utf-8"))
+              return str(data["project"]["version"])
+
+          base_raw = subprocess.check_output(["git", "show", f"{base_sha}:pyproject.toml"])
+          head_raw = subprocess.check_output(["git", "show", f"{head_sha}:pyproject.toml"])
+
+          base_version = read_version_from_bytes(base_raw)
+          head_version = read_version_from_bytes(head_raw)
+
+          print(f"Base version: {base_version}")
+          print(f"PR version:   {head_version}")
+
+          if base_version == head_version:
+              print(
+                  "::error::pyproject.toml version was not bumped. "
+                  f"Current PR has {head_version}, same as base branch. "
+                  "Please increment [project].version before merging."
+              )
+              sys.exit(1)
+          PY
+
   build:
+    needs: [version-bump-check]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
